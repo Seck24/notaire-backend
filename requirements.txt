@@ -1,0 +1,8 @@
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+python-multipart==0.0.12
+supabase==2.10.0
+mistralai==1.2.4
+anthropic==0.40.0
+pdfplumber==0.11.4
+python-dotenv==1.0.1

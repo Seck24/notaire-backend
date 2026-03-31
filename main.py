@@ -6,13 +6,15 @@ FastAPI server pour la génération d'actes notariaux via RAG + Claude
 import os
 import io
 import time
+import base64
 import logging
+import httpx
 from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 # ─── CONFIG ───────────────────────────────────────────────────
@@ -27,6 +29,7 @@ TENANT_ID         = "commun"
 EMBED_MODEL       = "mistral-embed"
 CLAUDE_MODEL      = "claude-sonnet-4-6"
 TOP_K             = 8   # chunks RAG à récupérer
+WORD_API_URL      = os.environ.get("WORD_API_URL", "http://161.97.181.171:8001")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -264,3 +267,52 @@ async def generer_acte(
         "rag_chunks_utilises": len(chunks_rag),
         "docs_fournis": len(fichiers),
     })
+
+
+class WordRequest(BaseModel):
+    type_acte: str
+    texte_acte: str
+    cabinet_nom: str = "Étude Notariale"
+
+
+@app.post("/api/generate-word")
+async def generate_word(payload: WordRequest):
+    """
+    Proxy vers le Word API (port 8001).
+    Retourne le fichier .docx en téléchargement direct.
+    """
+    # Mapping type_acte frontend → Word API
+    type_map = {
+        "vente":      "vente_immobiliere",
+        "societe":    "constitution_societe",
+        "succession": "succession",
+        "donation":   "donation",
+        "credit":     "ouverture_credit",
+        "bail":       "vente_immobiliere",  # fallback
+    }
+    type_acte_word = type_map.get(payload.type_acte, payload.type_acte)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{WORD_API_URL}/generate-word",
+                json={
+                    "type_acte": type_acte_word,
+                    "texte_acte": payload.texte_acte,
+                    "cabinet_nom": payload.cabinet_nom,
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+
+        docx_bytes = base64.b64decode(data["docx_base64"])
+        filename = data.get("filename", f"acte_{type_acte_word}.docx")
+
+        return Response(
+            content=docx_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+    except httpx.HTTPError as e:
+        logger.error(f"Erreur Word API : {e}")
+        raise HTTPException(status_code=502, detail="Erreur lors de la génération Word")
